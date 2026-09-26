@@ -5,7 +5,7 @@ edition = "2024"
 # Raised from edition 2024's 1.85 by the egui-winit fork in [patch.crates-io].
 rust-version = "1.92"
 description = "A GUI curve-fitting workbench: combine preset and plugin models (Python, C, Rust) and fit one or many datasets"
-authors = ["IndigoCarmine"]
+authors = ["Yuhei Yamada"]
 license = "MIT"
 repository = "https://github.com/IndigoCarmine/fit_it"
 readme = "README.md"
@@ -40,6 +40,8 @@ winit = { git = "https://github.com/IndigoCarmine/winit", branch = "wayland-nati
 egui-winit = { git = "https://github.com/IndigoCarmine/egui-winit", branch = "main" }
 
 [dev-dependencies]
+# Headless UI driver used by tests/manual_screenshots.rs to capture the manual's screenshots.
+egui_kittest = { version = "0.35", features = ["wgpu", "eframe", "snapshot"] }
 
 [build-dependencies]
 winresource = "0.1"
@@ -70,8 +72,8 @@ strip = true
 
 # --- cargo-deb: used by .github/workflows/release.yml to build the Linux .deb ---
 [package.metadata.deb]
-maintainer = "IndigoCarmine"
-copyright = "2026, IndigoCarmine"
+maintainer = "Yuhei Yamada"
+copyright = "2026, Yuhei Yamada"
 license-file = ["LICENSE", "0"]
 extended-description = "GUI curve fitting: combine preset models, write your own in Python, C or as formulas, and fit one or many datasets."
 section = "utils"

@@ -1,0 +1,57 @@
+グローバルフィット — 06:29:51 UTC
+[[Fit Statistics]]
+    status             = success
+    message            = multi-start: 20 LM runs, best χ² = 1.042713e-1; LM polish: converged: relative χ² change below ftol
+    # function evals   = 13830
+    # iterations       = 1524
+    # data points      = 724
+    # variables        = 7
+    chi-square         = 0.104271
+    reduced chi-square = 1.454272e-4
+    Akaike info crit   = -6390.1783
+    Bayesian info crit = -6358.0848
+    R-squared [D1]      = 0.999010
+    R-squared [D2]      = 0.999166
+    R-squared [D3]      = 0.999214
+    R-squared [D4]      = 0.999210
+[[Variables]]
+    D1.t1_deltaH   : -89867.115986 +/- 294.418995 (0.33%) (init = -80000.000000)
+    D1.t1_deltaS   : -179.560097 +/- 0.916373 (0.51%) (init = -150.000000)
+    D1.t1_deltaHnuc: 10163.208941 +/- 100.999471 (0.99%) (init = 5000.000000)
+    D1.t1_c_tot    : 5.000000e-6 +/- 0.000000 (0.00%) == 'conc_M'
+    D1.t1_scaler   : 0.978542 +/- 0.002080 (0.21%) (init = 1.000000)
+    D2.t1_deltaH   : -89867.115986 +/- 294.418995 (0.33%) == 'D1.t1_deltaH'
+    D2.t1_deltaS   : -179.560097 +/- 0.916373 (0.51%) == 'D1.t1_deltaS'
+    D2.t1_deltaHnuc: 10163.208941 +/- 100.999471 (0.99%) == 'D1.t1_deltaHnuc'
+    D2.t1_c_tot    : 1.000000e-5 +/- 0.000000 (0.00%) == 'conc_M'
+    D2.t1_scaler   : 1.022399 +/- 0.001720 (0.17%) (init = 1.000000)
+    D3.t1_deltaH   : -89867.115986 +/- 294.418995 (0.33%) == 'D1.t1_deltaH'
+    D3.t1_deltaS   : -179.560097 +/- 0.916373 (0.51%) == 'D1.t1_deltaS'
+    D3.t1_deltaHnuc: 10163.208941 +/- 100.999471 (0.99%) == 'D1.t1_deltaHnuc'
+    D3.t1_c_tot    : 2.000000e-5 +/- 0.000000 (0.00%) == 'conc_M'
+    D3.t1_scaler   : 0.968572 +/- 0.001474 (0.15%) (init = 1.000000)
+    D4.t1_deltaH   : -89867.115986 +/- 294.418995 (0.33%) == 'D1.t1_deltaH'
+    D4.t1_deltaS   : -179.560097 +/- 0.916373 (0.51%) == 'D1.t1_deltaS'
+    D4.t1_deltaHnuc: 10163.208941 +/- 100.999471 (0.99%) == 'D1.t1_deltaHnuc'
+    D4.t1_c_tot    : 5.000000e-5 +/- 0.000000 (0.00%) == 'conc_M'
+    D4.t1_scaler   : 1.009036 +/- 0.001319 (0.13%) (init = 1.000000)
+[[Correlations]] (unreported correlations are < 0.100)
+    C(D1.t1_deltaH, D1.t1_deltaS)        = +0.9988
+    C(D1.t1_deltaS, D1.t1_deltaHnuc)     = +0.5140
+    C(D1.t1_deltaH, D1.t1_scaler)        = +0.4846
+    C(D1.t1_deltaH, D1.t1_deltaHnuc)     = +0.4779
+    C(D1.t1_deltaS, D1.t1_scaler)        = +0.4703
+    C(D1.t1_deltaH, D2.t1_scaler)        = +0.3274
+    C(D1.t1_deltaS, D2.t1_scaler)        = +0.3125
+    C(D1.t1_scaler, D2.t1_scaler)        = +0.2527
+    C(D1.t1_deltaHnuc, D4.t1_scaler)     = -0.2121
+    C(D1.t1_scaler, D3.t1_scaler)        = +0.1519
+    C(D2.t1_scaler, D3.t1_scaler)        = +0.1369
+    C(D1.t1_deltaS, D4.t1_scaler)        = -0.1311
+    C(D1.t1_deltaH, D3.t1_scaler)        = +0.1290
+    C(D1.t1_deltaH, D4.t1_scaler)        = -0.1178
+    C(D1.t1_deltaS, D3.t1_scaler)        = +0.1151
+[[Derived]]
+    deltaG_300K : -35999.086945 +/- 23.976927  = t1_deltaH - 300 * t1_deltaS
+    K_elong_300K: 1.854489e6 +/- 17826.833222  = exp(-(t1_deltaH - 300 * t1_deltaS) / (8.314 * 300))
+    sigma_300K  : 0.016997 +/- 6.882591e-4  = exp(-t1_deltaHnuc / (8.314 * 300))
