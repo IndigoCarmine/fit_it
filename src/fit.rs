@@ -18,6 +18,8 @@ use std::fmt::Write as _;
 use std::sync::Mutex;
 use std::sync::atomic::{AtomicBool, Ordering};
 
+mod global;
+
 /// JSON has no infinity, so unbounded limits are stored as `null`.
 mod bound {
     use serde::{Deserialize, Deserializer, Serializer};
@@ -462,13 +464,66 @@ fn invert(a: &[f64], n: usize) -> Option<Vec<f64>> {
 // ---------------------------------------------------------------------------
 // Levenberg–Marquardt
 
+/// How the minimum is searched for. Every method ends with a Levenberg–Marquardt
+/// run, so uncertainties and correlations are always computed the same way.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+pub enum FitAlgorithm {
+    /// Local Levenberg–Marquardt from the current values (fast; finds the
+    /// nearest minimum).
+    #[default]
+    LevenbergMarquardt,
+    /// LM from the current values plus the best of many Latin-hypercube
+    /// samples of the search box; keeps the lowest χ².
+    MultiStart,
+    /// L-SHADE differential evolution over the search box, then LM polish.
+    DifferentialEvolution,
+    /// Basin hopping: random jumps between LM minima with Metropolis acceptance.
+    BasinHopping,
+}
+
+impl FitAlgorithm {
+    pub const ALL: [FitAlgorithm; 4] = [
+        FitAlgorithm::LevenbergMarquardt,
+        FitAlgorithm::MultiStart,
+        FitAlgorithm::DifferentialEvolution,
+        FitAlgorithm::BasinHopping,
+    ];
+
+    pub fn label(self) -> &'static str {
+        match self {
+            FitAlgorithm::LevenbergMarquardt => "Levenberg–Marquardt",
+            FitAlgorithm::MultiStart => "Multi-start LM",
+            FitAlgorithm::DifferentialEvolution => "Differential evolution + LM",
+            FitAlgorithm::BasinHopping => "Basin hopping",
+        }
+    }
+
+    pub fn is_global(self) -> bool {
+        self != FitAlgorithm::LevenbergMarquardt
+    }
+}
+
 #[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct FitOptions {
+    /// Evaluation budget of the (final) Levenberg–Marquardt run.
     pub max_nfev: usize,
     pub ftol: f64,
     pub xtol: f64,
     pub gtol: f64,
+    pub algorithm: FitAlgorithm,
+    /// Evaluation budget of the global stage (the final LM polish is extra).
+    pub global_max_nfev: usize,
+    /// Multi-start: number of LM runs. Basin hopping: number of hops.
+    pub global_starts: usize,
+    /// Differential evolution initial population; 0 picks one from the
+    /// number of free parameters.
+    pub population: usize,
+    /// Half-width of the search range for parameters without finite bounds, in
+    /// units of `max(|value|, 1)` (see [`search_box`]).
+    pub search_width: f64,
+    /// Random seed; the same seed and problem give the same result.
+    pub seed: u64,
 }
 
 impl Default for FitOptions {
@@ -478,7 +533,30 @@ impl Default for FitOptions {
             ftol: 1e-10,
             xtol: 1e-10,
             gtol: 1e-10,
+            algorithm: FitAlgorithm::LevenbergMarquardt,
+            global_max_nfev: 20_000,
+            global_starts: 20,
+            population: 0,
+            search_width: 5.0,
+            seed: 1,
         }
+    }
+}
+
+/// Range sampled by the global methods for a parameter with current `value` and
+/// bounds `(lo, hi)`. Finite bounds are used as they are. A missing bound is
+/// replaced by `value ± width·max(|value|, 1)`, so e.g. an amplitude of 5 with
+/// `lo = 0` and the default width 5 is searched in `[0, 30]`, and an unbounded
+/// center at 0 in `[-5, 5]`. Set finite bounds when the scale is known better
+/// (peak centers → the x range of the data).
+pub fn search_box(value: f64, (lo, hi): (f64, f64), width: f64) -> (f64, f64) {
+    let v = if value.is_finite() { value } else { 0.0 };
+    let s = width.abs().max(1e-12) * v.abs().max(1.0);
+    match (lo.is_finite(), hi.is_finite()) {
+        (true, true) => (lo, hi.max(lo)),
+        (true, false) => (lo, v.max(lo) + s),
+        (false, true) => (v.min(hi) - s, hi),
+        (false, false) => (v - s, v + s),
     }
 }
 
@@ -606,6 +684,30 @@ impl Evaluator<'_> {
         out
     }
 
+    /// Internal coordinates of free external values.
+    fn internal(&self, free_ext: &[f64]) -> Vec<f64> {
+        free_ext
+            .iter()
+            .zip(&self.problem.free)
+            .map(|(&v, &i)| to_internal(v, self.problem.bounds[i]))
+            .collect()
+    }
+
+    /// χ² at free external values; infinity when the model fails.
+    fn cost_ext(&mut self, free_ext: &[f64]) -> f64 {
+        self.nfev += 1;
+        let values = self.problem.values_with(free_ext);
+        let mut buf = std::mem::take(&mut self.buf);
+        let cost = if self.problem.residuals(&values, &mut buf).is_ok() {
+            let c: f64 = buf.iter().map(|r| r * r).sum();
+            if c.is_finite() { c } else { f64::INFINITY }
+        } else {
+            f64::INFINITY
+        };
+        self.buf = buf;
+        cost
+    }
+
     /// Forward-difference Jacobian of the residuals (m×n, row-major).
     fn jacobian(&mut self, u: &[f64], r0: &[f64]) -> Option<Vec<f64>> {
         let (m, n) = (r0.len(), u.len());
@@ -649,48 +751,45 @@ fn normal_equations(jac: &[f64], r: &[f64], n: usize) -> (Vec<f64>, Vec<f64>) {
     (a, g)
 }
 
-pub fn fit(
-    problem: &Problem,
+fn report_progress(progress: Option<&Mutex<Progress>>, iter: usize, nfev: usize, chisqr: f64) {
+    if let Some(p) = progress
+        && let Ok(mut p) = p.lock()
+    {
+        *p = Progress { nfev, iter, chisqr };
+    }
+}
+
+fn cancelled(cancel: Option<&AtomicBool>) -> bool {
+    cancel.is_some_and(|c| c.load(Ordering::Relaxed))
+}
+
+/// Result of one Levenberg–Marquardt run (internal coordinates).
+struct LmRun {
+    u: Vec<f64>,
+    r: Vec<f64>,
+    cost: f64,
+    niter: usize,
+    success: bool,
+    message: String,
+}
+
+/// Levenberg–Marquardt from internal point `u` with residuals `r`. Stops once
+/// `ev.nfev` reaches `nfev_limit`. `iter0` offsets the reported iteration count.
+#[allow(clippy::too_many_arguments)]
+fn levenberg_marquardt(
+    ev: &mut Evaluator,
+    mut u: Vec<f64>,
+    mut r: Vec<f64>,
     opts: &FitOptions,
+    nfev_limit: usize,
+    iter0: usize,
     progress: Option<&Mutex<Progress>>,
     cancel: Option<&AtomicBool>,
-) -> Result<FitOutcome, String> {
-    let n = problem.free.len();
-    let ndata = problem.ndata();
-    if ndata == 0 {
-        return Err("no data points in the fit range".into());
-    }
-    if ndata < n {
-        return Err(format!(
-            "{ndata} data points cannot determine {n} free parameters"
-        ));
-    }
-    let mut ev = Evaluator {
-        problem,
-        nfev: 0,
-        buf: Vec::new(),
-    };
-    let init = problem.current_values();
-    let mut u: Vec<f64> = problem
-        .free
-        .iter()
-        .map(|&i| to_internal(init[i], problem.bounds[i]))
-        .collect();
-    let mut r = match ev.residuals(&u) {
-        Some(r) => r,
-        None => {
-            let mut buf = Vec::new();
-            problem.residuals(&init, &mut buf)?;
-            return Err("the model returns NaN or infinity at the initial parameters".into());
-        }
-    };
+) -> LmRun {
+    let n = u.len();
     let mut cost: f64 = r.iter().map(|v| v * v).sum();
     let report = |iter: usize, nfev: usize, chisqr: f64| {
-        if let Some(p) = progress
-            && let Ok(mut p) = p.lock()
-        {
-            *p = Progress { nfev, iter, chisqr };
-        }
+        report_progress(progress, iter0 + iter, nfev, chisqr)
     };
 
     let mut lambda = 1e-3;
@@ -699,12 +798,12 @@ pub fn fit(
     let (mut success, mut message) = (true, String::from("no free parameters"));
     if n > 0 {
         loop {
-            if cancel.is_some_and(|c| c.load(Ordering::Relaxed)) {
+            if cancelled(cancel) {
                 success = false;
                 message = "cancelled".into();
                 break;
             }
-            if ev.nfev >= opts.max_nfev {
+            if ev.nfev >= nfev_limit {
                 success = false;
                 message = format!("stopped after {} function evaluations (max_nfev)", ev.nfev);
                 break;
@@ -732,7 +831,7 @@ pub fn fit(
             }
             let mut improved = false;
             let mut stop = None;
-            while ev.nfev < opts.max_nfev {
+            while ev.nfev < nfev_limit {
                 let mut m = a.clone();
                 for j in 0..n {
                     m[j * n + j] += lambda * diag[j];
@@ -786,6 +885,86 @@ pub fn fit(
         }
     }
     report(niter, ev.nfev, cost);
+    LmRun {
+        u,
+        r,
+        cost,
+        niter,
+        success,
+        message,
+    }
+}
+
+pub fn fit(
+    problem: &Problem,
+    opts: &FitOptions,
+    progress: Option<&Mutex<Progress>>,
+    cancel: Option<&AtomicBool>,
+) -> Result<FitOutcome, String> {
+    let n = problem.free.len();
+    let ndata = problem.ndata();
+    if ndata == 0 {
+        return Err("no data points in the fit range".into());
+    }
+    if ndata < n {
+        return Err(format!(
+            "{ndata} data points cannot determine {n} free parameters"
+        ));
+    }
+    let mut ev = Evaluator {
+        problem,
+        nfev: 0,
+        buf: Vec::new(),
+    };
+    let init = problem.current_values();
+    let init_free: Vec<f64> = problem.free.iter().map(|&i| init[i]).collect();
+
+    // Global stage: find a start point for the final LM run.
+    let mut global_note = None;
+    let mut global_iters = 0;
+    let start = if opts.algorithm.is_global() && n > 0 {
+        let g = global::search(&mut ev, opts, &init_free, progress, cancel);
+        if !g.cost.is_finite() {
+            return Err(format!(
+                "{}: the model returns NaN or infinity everywhere it was sampled",
+                opts.algorithm.label()
+            ));
+        }
+        global_iters = g.iters;
+        global_note = Some(g.note);
+        g.free
+    } else {
+        init_free
+    };
+
+    let u = ev.internal(&start);
+    let r = match ev.residuals(&u) {
+        Some(r) => r,
+        None => {
+            let mut buf = Vec::new();
+            problem.residuals(&problem.values_with(&start), &mut buf)?;
+            return Err("the model returns NaN or infinity at the initial parameters".into());
+        }
+    };
+    let limit = if global_note.is_some() {
+        ev.nfev + opts.max_nfev
+    } else {
+        // Plain LM: the budget includes the initial evaluation, as before.
+        opts.max_nfev
+    };
+    let run = levenberg_marquardt(&mut ev, u, r, opts, limit, global_iters, progress, cancel);
+    let LmRun {
+        u,
+        r,
+        cost,
+        niter,
+        success,
+        mut message,
+    } = run;
+    let niter = niter + global_iters;
+    if let Some(note) = global_note {
+        message = format!("{note}; LM polish: {message}");
+    }
 
     // Statistics
     let values = ev.ext(&u);
@@ -1264,6 +1443,319 @@ mod tests {
         assert!(json.contains("\"max\":null"));
         let back: Param = serde_json::from_str(&json).unwrap();
         assert_eq!(back, p);
+    }
+
+    // --- Global methods on multimodal problems -----------------------------
+
+    /// `amplitude · sin(freq · x + phase)` — χ² in `freq` has many local minima.
+    struct Sine(crate::model::ModelInfo);
+
+    impl crate::model::Model for Sine {
+        fn info(&self) -> &crate::model::ModelInfo {
+            &self.0
+        }
+        fn eval(&self, x: &[f64], p: &[f64], out: &mut [f64]) -> Result<(), String> {
+            for (o, &x) in out.iter_mut().zip(x) {
+                *o = p[0] * (p[1] * x + p[2]).sin();
+            }
+            Ok(())
+        }
+    }
+
+    fn lookup_with_sine(name: &str) -> Option<crate::model::ModelRef> {
+        if name == "sine" {
+            return Some(std::sync::Arc::new(Sine(crate::model::ModelInfo {
+                name: "sine".into(),
+                params: vec![
+                    ParamDef::new("amplitude", 1.0),
+                    ParamDef::new("freq", 1.0),
+                    ParamDef::new("phase", 0.0),
+                ],
+                ..Default::default()
+            })));
+        }
+        lookup(name)
+    }
+
+    const TWO_PEAKS: [f64; 6] = [5.0, -3.0, 0.6, 3.0, 4.0, 0.8];
+
+    /// Two Gaussians; `start` is the initial guess, bounds are the data range.
+    fn two_peaks(start: &[f64]) -> (Problem, f64) {
+        let m = composite(&[("g1", "gaussian"), ("g2", "gaussian")]);
+        let arrays = synth(&m, &TWO_PEAKS, 0.01);
+        let mut ps = params(&m, start);
+        for (i, p) in ps.iter_mut().enumerate() {
+            (p.min, p.max) = match i % 3 {
+                0 => (0.0, 50.0),
+                1 => (-10.0, 10.0),
+                _ => (0.05, 5.0),
+            };
+        }
+        let chi_true = chi_at(&m, &arrays, &TWO_PEAKS);
+        let problem = Problem::new(vec![DatasetJob {
+            tag: "D1".into(),
+            model: m,
+            arrays,
+            params: ps,
+            active: true,
+            constants: Vec::new(),
+        }])
+        .unwrap();
+        (problem, chi_true)
+    }
+
+    const THREE_PEAKS: [f64; 9] = [4.0, -2.0, 0.5, 2.5, -0.5, 0.6, 3.0, 2.5, 0.9];
+
+    /// Three partly overlapping Gaussians (9 parameters).
+    fn three_peaks(start: &[f64]) -> (Problem, f64) {
+        let m = composite(&[("g1", "gaussian"), ("g2", "gaussian"), ("g3", "gaussian")]);
+        let arrays = synth(&m, &THREE_PEAKS, 0.01);
+        let mut ps = params(&m, start);
+        for (i, p) in ps.iter_mut().enumerate() {
+            (p.min, p.max) = match i % 3 {
+                0 => (0.0, 50.0),
+                1 => (-10.0, 10.0),
+                _ => (0.05, 5.0),
+            };
+        }
+        let chi_true = chi_at(&m, &arrays, &THREE_PEAKS);
+        let problem = Problem::new(vec![DatasetJob {
+            tag: "D1".into(),
+            model: m,
+            arrays,
+            params: ps,
+            active: true,
+            constants: Vec::new(),
+        }])
+        .unwrap();
+        (problem, chi_true)
+    }
+
+    const SINE: [f64; 3] = [2.0, 2.3, 0.7];
+
+    fn sine(start: &[f64]) -> (Problem, f64) {
+        let spec = ModelSpec {
+            components: vec![Component {
+                name: "s".into(),
+                model: "sine".into(),
+            }],
+            formula: String::new(),
+        };
+        let m = CompiledComposite::build(&spec, &lookup_with_sine).unwrap();
+        let x: Vec<f64> = (0..200).map(|i| i as f64 * 0.1).collect();
+        let mut y = vec![0.0; x.len()];
+        m.eval(&x, &SINE, &mut y).unwrap();
+        for (i, v) in y.iter_mut().enumerate() {
+            *v += 0.05 * (((i as f64 * 12.9898).sin() * 43758.5453).fract() - 0.5);
+        }
+        let arrays = FitArrays {
+            w: vec![1.0; x.len()],
+            x,
+            y,
+        };
+        let mut ps = params(&m, start);
+        (ps[0].min, ps[0].max) = (0.0, 10.0);
+        (ps[1].min, ps[1].max) = (0.1, 5.0);
+        (ps[2].min, ps[2].max) = (-4.0, 4.0);
+        let chi_true = chi_at(&m, &arrays, &SINE);
+        let problem = Problem::new(vec![DatasetJob {
+            tag: "D1".into(),
+            model: m,
+            arrays,
+            params: ps,
+            active: true,
+            constants: Vec::new(),
+        }])
+        .unwrap();
+        (problem, chi_true)
+    }
+
+    fn chi_at(m: &CompiledComposite, a: &FitArrays, p: &[f64]) -> f64 {
+        let mut f = vec![0.0; a.x.len()];
+        m.eval(&a.x, p, &mut f).unwrap();
+        a.y.iter().zip(&f).map(|(y, f)| (y - f).powi(2)).sum()
+    }
+
+    fn with(algorithm: FitAlgorithm, seed: u64) -> FitOptions {
+        FitOptions {
+            algorithm,
+            seed,
+            ..FitOptions::default()
+        }
+    }
+
+    /// A fit found the global minimum when its χ² is at most the χ² at the truth
+    /// (plus a little slack for the noise the fit absorbs).
+    fn found_global(out: &FitOutcome, chi_true: f64) -> bool {
+        out.chisqr <= chi_true * 1.05 + 1e-12
+    }
+
+    const GLOBAL: [FitAlgorithm; 3] = [
+        FitAlgorithm::MultiStart,
+        FitAlgorithm::DifferentialEvolution,
+        FitAlgorithm::BasinHopping,
+    ];
+
+    #[test]
+    fn global_methods_find_two_peaks_where_lm_fails() {
+        // Both peaks start on the right-hand side; LM puts both into the peak at 4.
+        let (problem, chi_true) = two_peaks(&[3.0, 3.5, 0.5, 2.0, 4.5, 0.5]);
+        let lm = fit(&problem, &FitOptions::default(), None, None).unwrap();
+        assert!(
+            !found_global(&lm, chi_true),
+            "LM should get stuck\n{}",
+            lm.report()
+        );
+        for alg in GLOBAL {
+            let out = fit(&problem, &with(alg, 7), None, None).unwrap();
+            assert!(found_global(&out, chi_true), "{alg:?}\n{}", out.report());
+            let mut centers = [out.values[1], out.values[4]];
+            centers.sort_by(f64::total_cmp);
+            assert!((centers[0] + 3.0).abs() < 0.02 && (centers[1] - 4.0).abs() < 0.02);
+            assert!(out.stderr[1].is_some(), "LM polish yields uncertainties");
+        }
+    }
+
+    #[test]
+    fn global_methods_find_sine_frequency_where_lm_fails() {
+        let (problem, chi_true) = sine(&[1.0, 0.8, 0.0]);
+        let lm = fit(&problem, &FitOptions::default(), None, None).unwrap();
+        assert!(
+            !found_global(&lm, chi_true),
+            "LM should get stuck\n{}",
+            lm.report()
+        );
+        for alg in GLOBAL {
+            let out = fit(&problem, &with(alg, 3), None, None).unwrap();
+            assert!(found_global(&out, chi_true), "{alg:?}\n{}", out.report());
+            assert!(
+                (out.values[1] - 2.3).abs() < 1e-2,
+                "{alg:?}\n{}",
+                out.report()
+            );
+        }
+    }
+
+    #[test]
+    fn global_methods_respect_fixed_constraints_and_unbounded_params() {
+        // Centers are unbounded (search box ±5 around the start), g1_amplitude is
+        // fixed and g2_sigma is tied to g1_sigma.
+        let truth = [5.0, -3.0, 0.7, 3.0, 4.0, 0.7];
+        let m = composite(&[("g1", "gaussian"), ("g2", "gaussian")]);
+        let arrays = synth(&m, &truth, 0.01);
+        let chi_true = chi_at(&m, &arrays, &truth);
+        let mut ps = params(&m, &[5.0, 0.0, 1.0, 1.0, 0.5, 1.0]);
+        ps[0].vary = false;
+        ps[5].expr = "g1_sigma".into();
+        let problem = Problem::new(vec![DatasetJob {
+            tag: "D1".into(),
+            model: m,
+            arrays,
+            params: ps,
+            active: true,
+            constants: Vec::new(),
+        }])
+        .unwrap();
+        assert_eq!(problem.free().len(), 4);
+        for alg in GLOBAL {
+            let out = fit(&problem, &with(alg, 11), None, None).unwrap();
+            assert!(found_global(&out, chi_true), "{alg:?}\n{}", out.report());
+            assert_eq!(out.values[0], 5.0);
+            assert_eq!(out.values[2], out.values[5]);
+            assert!(out.stderr[5].is_some());
+        }
+    }
+
+    #[test]
+    fn global_methods_are_deterministic_and_cancellable() {
+        let (problem, _) = sine(&[1.0, 0.8, 0.0]);
+        for alg in GLOBAL {
+            let a = fit(&problem, &with(alg, 5), None, None).unwrap();
+            let b = fit(&problem, &with(alg, 5), None, None).unwrap();
+            assert_eq!(a.values, b.values);
+            assert_eq!(a.nfev, b.nfev);
+            let cancel = AtomicBool::new(true);
+            let c = fit(&problem, &with(alg, 5), None, Some(&cancel)).unwrap();
+            assert!(
+                !c.success && c.message.contains("cancelled"),
+                "{}",
+                c.message
+            );
+            assert!(
+                c.nfev < 100,
+                "{alg:?} ran {} evaluations after cancel",
+                c.nfev
+            );
+        }
+    }
+
+    #[test]
+    fn options_without_algorithm_load_as_levenberg_marquardt() {
+        let o: FitOptions = serde_json::from_str(r#"{"max_nfev": 123, "ftol": 1e-8}"#).unwrap();
+        assert_eq!(o.algorithm, FitAlgorithm::LevenbergMarquardt);
+        assert_eq!(o.max_nfev, 123);
+        let o = FitOptions {
+            algorithm: FitAlgorithm::DifferentialEvolution,
+            ..Default::default()
+        };
+        let back: FitOptions = serde_json::from_str(&serde_json::to_string(&o).unwrap()).unwrap();
+        assert_eq!(back, o);
+    }
+
+    #[test]
+    fn search_box_uses_finite_bounds_and_scales_missing_ones() {
+        let inf = f64::INFINITY;
+        assert_eq!(search_box(3.0, (0.0, 10.0), 5.0), (0.0, 10.0));
+        assert_eq!(search_box(5.0, (0.0, inf), 5.0), (0.0, 30.0));
+        assert_eq!(search_box(0.0, (-inf, inf), 5.0), (-5.0, 5.0));
+        assert_eq!(search_box(-2.0, (-inf, 1.0), 2.0), (-6.0, 1.0));
+    }
+
+    /// Success rate and cost of each method from random starts.
+    /// `cargo test --release -- --ignored --nocapture compare_methods`
+    #[test]
+    #[ignore]
+    fn compare_methods() {
+        let peak = [(0.0, 10.0), (-10.0, 10.0), (0.1, 3.0)];
+        type Make = fn(&[f64]) -> (Problem, f64);
+        type Case = (&'static str, Make, Vec<(f64, f64)>);
+        let problems: [Case; 3] = [
+            ("two Gaussians (6 p)", two_peaks, peak.repeat(2)),
+            ("three Gaussians (9 p)", three_peaks, peak.repeat(3)),
+            (
+                "sine (3 p)",
+                sine,
+                vec![(0.5, 5.0), (0.1, 5.0), (-3.0, 3.0)],
+            ),
+        ];
+        let mut rng = global::Rng::new(2024);
+        let runs = 20;
+        println!("| problem | method | found global | mean nfev |");
+        println!("|---|---|---|---|");
+        for (name, make, ranges) in &problems {
+            let starts: Vec<Vec<f64>> = (0..runs)
+                .map(|_| {
+                    ranges
+                        .iter()
+                        .map(|(a, b)| a + (b - a) * rng.uniform())
+                        .collect()
+                })
+                .collect();
+            for alg in FitAlgorithm::ALL {
+                let (mut ok, mut nfev) = (0, 0);
+                for (k, s) in starts.iter().enumerate() {
+                    let (problem, chi_true) = make(s);
+                    let out = fit(&problem, &with(alg, k as u64 + 1), None, None).unwrap();
+                    ok += found_global(&out, chi_true) as usize;
+                    nfev += out.nfev;
+                }
+                println!(
+                    "| {name} | {} | {ok}/{runs} | {} |",
+                    alg.label(),
+                    nfev / runs
+                );
+            }
+        }
     }
 
     #[test]

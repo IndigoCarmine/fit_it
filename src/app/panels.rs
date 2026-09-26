@@ -706,6 +706,54 @@ impl FitApp {
                 egui::Grid::new("fit_options")
                     .num_columns(2)
                     .show(ui, |ui| {
+                        use crate::fit::FitAlgorithm;
+                        let alg_text = |a: FitAlgorithm| match a {
+                            FitAlgorithm::LevenbergMarquardt => t("Levenberg–Marquardt (local)", "Levenberg–Marquardt（局所）"),
+                            FitAlgorithm::MultiStart => t("Multi-start LM", "マルチスタート LM"),
+                            FitAlgorithm::DifferentialEvolution => t("Differential evolution + LM", "差分進化 + LM"),
+                            FitAlgorithm::BasinHopping => t("Basin hopping", "ベイスンホッピング"),
+                        };
+                        ui.label(t("algorithm", "アルゴリズム")).on_hover_text(t(
+                            "Global methods search the whole bound range for the lowest χ² (many local minima: multi-peak spectra, oscillations) and finish with LM. Parameters without finite bounds are searched within ± search width × max(|value|, 1).",
+                            "大域的手法は境界範囲全体から最小の χ² を探し（局所解が多い場合: 多ピーク、振動など）、最後に LM で仕上げます。有限の境界がないパラメータは ± 探索幅 × max(|値|, 1) の範囲で探索します。",
+                        ));
+                        egui::ComboBox::from_id_salt("fit_algorithm")
+                            .selected_text(alg_text(o.algorithm))
+                            .show_ui(ui, |ui| {
+                                for a in FitAlgorithm::ALL {
+                                    ui.selectable_value(&mut o.algorithm, a, alg_text(a));
+                                }
+                            });
+                        ui.end_row();
+                        if o.algorithm.is_global() {
+                            ui.label(t("global evaluations", "大域探索の評価回数"));
+                            ui.add(egui::DragValue::new(&mut o.global_max_nfev).range(100..=100_000_000));
+                            ui.end_row();
+                            match o.algorithm {
+                                FitAlgorithm::MultiStart => {
+                                    ui.label(t("LM starts", "LM 開始点の数"));
+                                    ui.add(egui::DragValue::new(&mut o.global_starts).range(1..=100_000));
+                                    ui.end_row();
+                                }
+                                FitAlgorithm::BasinHopping => {
+                                    ui.label(t("hops", "ホップ回数"));
+                                    ui.add(egui::DragValue::new(&mut o.global_starts).range(1..=100_000));
+                                    ui.end_row();
+                                }
+                                FitAlgorithm::DifferentialEvolution => {
+                                    ui.label(t("population (0 = auto)", "個体数（0 = 自動）"));
+                                    ui.add(egui::DragValue::new(&mut o.population).range(0..=10_000));
+                                    ui.end_row();
+                                }
+                                FitAlgorithm::LevenbergMarquardt => {}
+                            }
+                            ui.label(t("search width", "探索幅"));
+                            ui.add(egui::DragValue::new(&mut o.search_width).range(0.01..=1e6).speed(0.1));
+                            ui.end_row();
+                            ui.label(t("seed", "乱数シード"));
+                            ui.add(egui::DragValue::new(&mut o.seed));
+                            ui.end_row();
+                        }
                         ui.label(t("max evaluations", "最大評価回数"));
                         ui.add(egui::DragValue::new(&mut o.max_nfev).range(10..=10_000_000));
                         ui.end_row();
