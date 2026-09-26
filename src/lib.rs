@@ -1,12 +1,21 @@
-//! Library half of the template.
+//! fit_it: a GUI curve-fitting workbench.
 //!
-//! Keeping the app in a library (rather than entirely in `main.rs`) means the
-//! state and update logic stay unit-testable — see the tests at the bottom of
-//! [`app`].
+//! The fitting core (`expr`, `model`, `fit`, `data`) has no UI dependencies and is
+//! unit-tested on its own; `plugin` turns files in the preset/plugin folders into
+//! models; `app` is the egui front end.
 
 pub mod app;
+pub mod data;
+pub mod export;
+pub mod expr;
+pub mod fit;
+pub mod model;
+pub mod plugin;
+pub mod project;
+pub mod report_pdf;
+pub mod transform;
 
-pub use app::TemplateApp;
+pub use app::FitApp;
 
 /// Display name, used for the window title and the eframe persistence key.
-pub const APP_NAME: &str = "egui Template";
+pub const APP_NAME: &str = "fit_it";

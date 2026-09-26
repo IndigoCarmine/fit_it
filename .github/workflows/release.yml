@@ -10,8 +10,8 @@ on:
   workflow_dispatch:
 
 env:
-  BIN_NAME: egui_template
-  APP_NAME: egui-template
+  BIN_NAME: fit_it
+  APP_NAME: fit-it
   CARGO_TERM_COLOR: always
 
 jobs:
@@ -24,6 +24,11 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # The Python bridge (crates/fit_it_py) is built with pyo3, which needs an
+      # interpreter at build time. Users bring their own Python at runtime.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
 
       - name: Derive version
         id: version
@@ -46,11 +51,19 @@ jobs:
           & $iscc "/DMyAppVersion=${{ steps.version.outputs.value }}" installer\windows.iss
 
       - name: Stage artifacts
-        shell: bash
+        shell: pwsh
         run: |
-          mkdir -p out
-          cp "target/release/${BIN_NAME}.exe" "out/${APP_NAME}-${{ steps.version.outputs.value }}-windows-x64.exe"
-          cp dist/*.exe out/
+          # The portable build is a zip: the exe needs presets\ and the Python
+          # bridge next to it.
+          $v = "${{ steps.version.outputs.value }}"
+          $stage = "portable\${env:APP_NAME}"
+          New-Item -ItemType Directory -Force $stage | Out-Null
+          Copy-Item "target\release\${env:BIN_NAME}.exe", "target\release\fit_it_py.dll", README.md $stage
+          Copy-Item resources\fonts\OFL.txt "$stage\NotoSansJP-OFL.txt"
+          Copy-Item -Recurse "target\release\presets" "$stage\presets"
+          New-Item -ItemType Directory -Force out | Out-Null
+          Compress-Archive -Path $stage -DestinationPath "out\${env:APP_NAME}-$v-windows-x64-portable.zip"
+          Copy-Item dist\*.exe out
 
       - uses: actions/upload-artifact@v4
         with:
@@ -69,6 +82,11 @@ jobs:
         with:
           targets: x86_64-apple-darwin,aarch64-apple-darwin
       - uses: Swatinem/rust-cache@v2
+      # The Python bridge (crates/fit_it_py) is built with pyo3, which needs an
+      # interpreter at build time. Users bring their own Python at runtime.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
 
       - name: Derive version
         id: version
@@ -87,9 +105,12 @@ jobs:
           cargo install cargo-bundle --locked
           brew install create-dmg
 
+      # The Python bridge is only built for the runner's own architecture
+      # (cross-building an embedded-Python library needs a target libpython).
+      # Intel Macs get the app and all C/formula presets, but no .py models.
       - name: Build (both architectures)
         run: |
-          cargo build --release --target x86_64-apple-darwin
+          cargo build --release --target x86_64-apple-darwin -p fit_it
           cargo build --release --target aarch64-apple-darwin
 
       - name: Bundle .app
@@ -101,11 +122,20 @@ jobs:
           # bundles one architecture, so we swap in a universal binary after.
           cargo bundle --release --target aarch64-apple-darwin
 
-          APP="target/aarch64-apple-darwin/release/bundle/osx/egui Template.app"
+          APP="target/aarch64-apple-darwin/release/bundle/osx/fit_it.app"
           lipo -create -output "${APP}/Contents/MacOS/${BIN_NAME}" \
             "target/x86_64-apple-darwin/release/${BIN_NAME}" \
             "target/aarch64-apple-darwin/release/${BIN_NAME}"
           lipo -info "${APP}/Contents/MacOS/${BIN_NAME}"
+
+          # Presets: sources plus each architecture's prebuilt libraries. Library
+          # names include a target hash, so both sets coexist in .build/.
+          RES="${APP}/Contents/Resources/presets"
+          mkdir -p "${RES}/.build"
+          cp -R target/aarch64-apple-darwin/release/presets/. "${RES}/"
+          cp target/x86_64-apple-darwin/release/presets/.build/* "${RES}/.build/"
+          cp target/aarch64-apple-darwin/release/libfit_it_py.dylib "${APP}/Contents/MacOS/"
+          cp resources/fonts/OFL.txt "${APP}/Contents/Resources/NotoSansJP-OFL.txt"
 
           # cargo-bundle takes the version from Cargo.toml; the tag is the real
           # source of truth, so overwrite both version keys with it.
@@ -122,11 +152,11 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.value }}
         run: |
-          APP="target/aarch64-apple-darwin/release/bundle/osx/egui Template.app"
+          APP="target/aarch64-apple-darwin/release/bundle/osx/fit_it.app"
           create-dmg \
-            --volname "egui Template" \
+            --volname "fit_it" \
             --window-size 500 300 \
-            --icon "egui Template.app" 130 130 \
+            --icon "fit_it.app" 130 130 \
             --app-drop-link 350 130 \
             "${APP_NAME}-${VERSION}-macos-universal.dmg" \
             "${APP}"
@@ -135,10 +165,11 @@ jobs:
         env:
           VERSION: ${{ steps.version.outputs.value }}
         run: |
-          APP="target/aarch64-apple-darwin/release/bundle/osx/egui Template.app"
+          APP="target/aarch64-apple-darwin/release/bundle/osx/fit_it.app"
           mkdir -p out
           mv "${APP_NAME}-${VERSION}-macos-universal.dmg" out/
-          cp "${APP}/Contents/MacOS/${BIN_NAME}" "out/${APP_NAME}-${VERSION}-macos-universal"
+          # Portable: the .app zipped (the bare binary would lack its presets).
+          ditto -c -k --keepParent "${APP}" "out/${APP_NAME}-${VERSION}-macos-universal.app.zip"
 
       - uses: actions/upload-artifact@v4
         with:
@@ -155,6 +186,11 @@ jobs:
 
       - uses: dtolnay/rust-toolchain@stable
       - uses: Swatinem/rust-cache@v2
+      # The Python bridge (crates/fit_it_py) is built with pyo3, which needs an
+      # interpreter at build time. Users bring their own Python at runtime.
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
 
       - name: Derive version
         id: version
@@ -204,6 +240,9 @@ jobs:
                    "${APPDIR}/usr/share/icons/hicolor/512x512/apps"
 
           cp "target/release/${BIN_NAME}" "${APPDIR}/usr/bin/"
+          mkdir -p "${APPDIR}/usr/share/fit_it" "${APPDIR}/usr/lib/fit_it"
+          cp -R target/release/presets "${APPDIR}/usr/share/fit_it/"
+          cp target/release/libfit_it_py.so "${APPDIR}/usr/lib/fit_it/"
           cp installer/linux/AppRun "${APPDIR}/AppRun"
           chmod +x "${APPDIR}/AppRun"
 
@@ -231,7 +270,12 @@ jobs:
           mkdir -p out
           mv ./*.AppImage out/
           cp target/debian/*.deb out/
-          cp "target/release/${BIN_NAME}" "out/${APP_NAME}-${VERSION}-linux-x86_64"
+          # Portable: binary, bridge and presets side by side.
+          mkdir -p "portable/${APP_NAME}"
+          cp "target/release/${BIN_NAME}" target/release/libfit_it_py.so README.md "portable/${APP_NAME}/"
+          cp resources/fonts/OFL.txt "portable/${APP_NAME}/NotoSansJP-OFL.txt"
+          cp -R target/release/presets "portable/${APP_NAME}/"
+          tar -czf "out/${APP_NAME}-${VERSION}-linux-x86_64.tar.gz" -C portable "${APP_NAME}"
 
       - uses: actions/upload-artifact@v4
         with:

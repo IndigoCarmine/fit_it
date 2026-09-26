@@ -1,0 +1,21 @@
+# fit_it formula model: MyModel
+# Every name in `formula` except x is a parameter. Operators: + - * / ^ (or **),
+# functions: exp ln log10 sqrt abs sin cos tan asin acos atan sinh cosh tanh
+# erf erfc sign pow min max atan2, constant: pi.
+name = "MyModel"
+category = "Custom"
+description = "Logistic growth"
+formula = "k / (1 + exp(-r * (x - x0)))"
+
+[[params]]
+name = "k"
+default = 1.0
+
+[[params]]
+name = "r"
+default = 1.0
+min = 0.0
+
+[[params]]
+name = "x0"
+default = 0.0

@@ -5,17 +5,18 @@
 ; Override the version at build time (this is what CI does):
 ;   iscc /DMyAppVersion=1.2.3 installer\windows.iss
 ;
-; Expects the release binary at target\release\egui_template.exe,
-; so run `cargo build --release` first. Output lands in dist\.
+; Expects the release build in target\release (fit_it.exe, fit_it_py.dll and the
+; presets\ folder that build.rs fills), so run `cargo build --release` first.
+; Output lands in dist\.
 
 #ifndef MyAppVersion
   #define MyAppVersion "0.1.0"
 #endif
 
-#define MyAppName "egui Template"
-#define MyAppPublisher "Your Name"
-#define MyAppURL "https://github.com/your-name/egui_template"
-#define MyAppExeName "egui_template.exe"
+#define MyAppName "fit_it"
+#define MyAppPublisher "IndigoCarmine"
+#define MyAppURL "https://github.com/IndigoCarmine/fit_it"
+#define MyAppExeName "fit_it.exe"
 
 ; "x64compatible" (native x64 + ARM64 running x64 code) is preferred, but it only
 ; exists on Inno Setup 6.3+; older compilers error on it, so fall back to "x64".
@@ -28,7 +29,7 @@
 [Setup]
 ; A stable AppId is what makes upgrades replace the previous install instead of
 ; stacking up alongside it. Generate your own GUID and then never change it.
-AppId={{4B1D9E77-2C3A-4F86-9A15-6E8D0B27C914}
+AppId={{6D06FD92-1B54-4B4E-A5C3-37DB6D4E38CB}
 AppName={#MyAppName}
 AppVersion={#MyAppVersion}
 AppVerName={#MyAppName} {#MyAppVersion}
@@ -42,7 +43,7 @@ DisableProgramGroupPage=yes
 ; Lets the user pick a per-user install (no admin rights needed) or machine-wide.
 PrivilegesRequiredOverridesAllowed=dialog commandline
 OutputDir=..\dist
-OutputBaseFilename=egui-template-{#MyAppVersion}-windows-x64-setup
+OutputBaseFilename=fit-it-{#MyAppVersion}-windows-x64-setup
 SetupIconFile=..\resources\icon.ico
 UninstallDisplayIcon={app}\{#MyAppExeName}
 UninstallDisplayName={#MyAppName}
@@ -61,6 +62,12 @@ Name: "desktopicon"; Description: "{cm:CreateDesktopIcon}"; GroupDescription: "{
 
 [Files]
 Source: "..\target\release\{#MyAppExeName}"; DestDir: "{app}"; Flags: ignoreversion
+; Python bridge, loaded only when a .py model is present.
+Source: "..\target\release\fit_it_py.dll"; DestDir: "{app}"; Flags: ignoreversion
+; Preset models: sources plus the libraries build.rs prebuilt into presets\.build.
+Source: "..\target\release\presets\*"; DestDir: "{app}\presets"; Flags: ignoreversion recursesubdirs
+; Noto Sans JP is built into the exe; its licence must travel with it.
+Source: "..\resources\fonts\OFL.txt"; DestDir: "{app}\licenses"; DestName: "NotoSansJP-OFL.txt"; Flags: ignoreversion
 Source: "..\resources\icon.ico"; DestDir: "{app}"; Flags: ignoreversion
 Source: "..\README.md"; DestDir: "{app}"; Flags: ignoreversion
 
@@ -72,12 +79,3 @@ Name: "{autodesktop}\{#MyAppName}"; Filename: "{app}\{#MyAppExeName}"; IconFilen
 [Run]
 Filename: "{app}\{#MyAppExeName}"; Description: "{cm:LaunchProgram,{#MyAppName}}"; Flags: nowait postinstall skipifsilent
 
-; --- Optional: file associations ---
-; Uncomment, add `ChangesAssociations=yes` to [Setup], and add an "associate" task
-; to wire your own extensions up to the app:
-;
-; [Registry]
-; Root: HKA; Subkey: "Software\Classes\EguiTemplate.File"; ValueType: string; ValueName: ""; ValueData: "egui Template file"; Flags: uninsdeletekey; Tasks: associate
-; Root: HKA; Subkey: "Software\Classes\EguiTemplate.File\DefaultIcon"; ValueType: string; ValueName: ""; ValueData: "{app}\{#MyAppExeName},0"; Tasks: associate
-; Root: HKA; Subkey: "Software\Classes\EguiTemplate.File\shell\open\command"; ValueType: string; ValueName: ""; ValueData: """{app}\{#MyAppExeName}"" ""%1"""; Tasks: associate
-; Root: HKA; Subkey: "Software\Classes\.myext"; ValueType: string; ValueName: ""; ValueData: "EguiTemplate.File"; Flags: uninsdeletevalue; Tasks: associate

@@ -2,7 +2,7 @@
 // `println!`/panics stay visible while developing.
 #![cfg_attr(not(debug_assertions), windows_subsystem = "windows")]
 
-use egui_template::{APP_NAME, TemplateApp};
+use fit_it::{APP_NAME, FitApp};
 
 /// The window/taskbar icon, embedded at compile time — the source tree is not
 /// present on an end user's machine, so it cannot be loaded from disk.
@@ -21,10 +21,13 @@ fn load_icon() -> Option<egui::IconData> {
 }
 
 fn main() -> eframe::Result<()> {
+    // Files given on the command line (or via "Open with") are opened at startup.
+    let files: Vec<std::path::PathBuf> = std::env::args_os().skip(1).map(Into::into).collect();
+
     let mut viewport = egui::ViewportBuilder::default()
         .with_title(APP_NAME)
-        .with_inner_size([960.0, 640.0])
-        .with_min_inner_size([480.0, 320.0]);
+        .with_inner_size([1360.0, 820.0])
+        .with_min_inner_size([900.0, 560.0]);
 
     if let Some(icon) = load_icon() {
         viewport = viewport.with_icon(icon);
@@ -38,6 +41,6 @@ fn main() -> eframe::Result<()> {
     eframe::run_native(
         APP_NAME,
         options,
-        Box::new(|cc| Ok(Box::new(TemplateApp::new(cc)))),
+        Box::new(move |cc| Ok(Box::new(FitApp::new(cc, &files)))),
     )
 }

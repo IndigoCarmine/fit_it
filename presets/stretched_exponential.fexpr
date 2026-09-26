@@ -1,0 +1,25 @@
+# fit_it formula model. Every name in `formula` except x is a parameter;
+# [[params]] entries set defaults, bounds and units.
+name = "StretchedExponential"
+category = "Decay"
+description = "Kohlrausch-Williams-Watts relaxation"
+formula = "amplitude * exp(-(x / tau) ^ beta) + c"
+
+[[params]]
+name = "amplitude"
+default = 1.0
+
+[[params]]
+name = "tau"
+default = 1.0
+min = 0.0
+
+[[params]]
+name = "beta"
+default = 0.7
+min = 0.0
+max = 1.0
+
+[[params]]
+name = "c"
+default = 0.0

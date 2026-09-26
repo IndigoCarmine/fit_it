@@ -1,22 +1,37 @@
 [package]
-name = "egui_template"
+name = "fit_it"
 version = "0.1.0"
 edition = "2024"
 # Raised from edition 2024's 1.85 by the egui-winit fork in [patch.crates-io].
 rust-version = "1.92"
-description = "A cross-platform egui/eframe application template with tag-driven installer releases"
-authors = ["Your Name <you@example.com>"]
+description = "A GUI curve-fitting workbench: combine preset and plugin models (Python, C, Rust) and fit one or many datasets"
+authors = ["IndigoCarmine"]
 license = "MIT"
-repository = "https://github.com/your-name/egui_template"
+repository = "https://github.com/IndigoCarmine/fit_it"
 readme = "README.md"
+
+# Python models run through a separate bridge library (crates/fit_it_py) that the
+# app loads on demand, so the exe itself never links libpython.
+[workspace]
+members = [".", "crates/fit_it_py"]
+default-members = [".", "crates/fit_it_py"]
 
 [dependencies]
 eframe = { version = "0.35.0", features = ["persistence"] }
 egui = "0.35.0"
 serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", features = ["float_roundtrip"] }
+egui_plot = "0.36"
+rfd = "0.15"
+libloading = "0.8"
+cc = "1.2"
+toml = "0.8"
+dirs = "6"
 
 # Only used to decode the embedded window icon, so the heavy default codecs are off.
 image = { version = "0.25", default-features = false, features = ["png"] }
+subsetter = "0.2.6"
+ttf-parser = "0.25.1"
 
 # Upstream winit/egui-winit do not implement native drag-and-drop on Wayland.
 # These forks do; without them DnD silently does nothing under a Wayland session.
@@ -25,23 +40,25 @@ winit = { git = "https://github.com/IndigoCarmine/winit", branch = "wayland-nati
 egui-winit = { git = "https://github.com/IndigoCarmine/egui-winit", branch = "main" }
 
 [dev-dependencies]
-serde_json = "1.0"
 
 [build-dependencies]
 winresource = "0.1"
+# build.rs compiles the shipped presets with the same code the app uses for plugins.
+cc = "1.2"
 
 # --- cargo-bundle: drives the macOS .app built by .github/workflows/release.yml ---
 # `cargo bundle` generates Info.plist from these keys, so there is no plist to
 # hand-maintain. Build the bundle locally with `cargo bundle --release`.
 [package.metadata.bundle]
-name = "egui Template"
-identifier = "com.example.egui-template"
+name = "fit_it"
+identifier = "io.github.indigocarmine.fit-it"
 icon = ["resources/icon.icns"]
-category = "Utility"
-short_description = "A cross-platform egui/eframe application template"
+category = "public.app-category.education"
+short_description = "GUI curve fitting with preset and plugin models"
 long_description = """
-A starting point for cross-platform desktop applications built with egui and
-eframe, including tag-driven installer releases for Windows, macOS and Linux.
+Load data, combine preset models, tune parameters interactively and fit one
+or many datasets at once. Models can be written in Python (SasView style), C
+or as formulas.
 """
 
 # Release binaries: smaller and faster, at the cost of longer link times.
@@ -53,18 +70,24 @@ strip = true
 
 # --- cargo-deb: used by .github/workflows/release.yml to build the Linux .deb ---
 [package.metadata.deb]
-maintainer = "Your Name <you@example.com>"
-copyright = "2026, Your Name <you@example.com>"
+maintainer = "IndigoCarmine"
+copyright = "2026, IndigoCarmine"
 license-file = ["LICENSE", "0"]
-extended-description = "A cross-platform GUI application built with egui and eframe."
+extended-description = "GUI curve fitting: combine preset models, write your own in Python, C or as formulas, and fit one or many datasets."
 section = "utils"
 priority = "optional"
 # eframe dlopens its GL/X11/Wayland libraries rather than linking them, so `$auto`
 # only ever detects libc. Without listing them the package installs cleanly and
 # then fails to start on a minimal system.
 depends = "$auto, libxkbcommon0, libwayland-client0, libegl1, libgl1, libx11-6, libxcursor1, libxi6, libxrandr2"
+# Presets (sources + prebuilt libraries) and the Python bridge live where
+# plugin::find_presets_dir / python::bridge_path look for them.
 assets = [
-    ["target/release/egui_template", "usr/bin/", "755"],
-    ["installer/linux/egui-template.desktop", "usr/share/applications/", "644"],
-    ["resources/icon.png", "usr/share/icons/hicolor/512x512/apps/egui-template.png", "644"],
+    ["target/release/fit_it", "usr/bin/", "755"],
+    ["target/release/presets/*", "usr/share/fit_it/presets/", "644"],
+    ["target/release/presets/.build/*", "usr/share/fit_it/presets/.build/", "644"],
+    ["target/release/libfit_it_py.so", "usr/lib/fit_it/", "644"],
+    ["installer/linux/fit-it.desktop", "usr/share/applications/", "644"],
+    ["resources/fonts/OFL.txt", "usr/share/doc/fit-it/NotoSansJP-OFL.txt", "644"],
+    ["resources/icon.png", "usr/share/icons/hicolor/512x512/apps/fit-it.png", "644"],
 ]

@@ -1,0 +1,10 @@
+[Desktop Entry]
+Type=Application
+Name=fit_it
+GenericName=Curve Fitting
+Comment=Fit data with preset and plugin models (Python, C, formulas)
+Exec=fit_it %F
+Icon=fit-it
+Terminal=false
+Categories=Education;Science;DataVisualization;
+StartupNotify=true
