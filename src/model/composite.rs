@@ -4,6 +4,10 @@
 //! as `<name>_<param>` (`g1_center`), like lmfit prefixes. The formula combines
 //! component outputs point-wise: `(g1 + g2) * decay + bg`. An empty formula
 //! means the sum of all components, which is what you want most of the time.
+//!
+//! The data's x can be converted before it reaches the model ([`XTransform`]),
+//! e.g. a temperature column in °C for models that expect kelvin. Plots, fit
+//! ranges and exports stay in the data's own units.
 
 use super::{ModelRef, ParamDef, is_identifier};
 use crate::expr::{Compiled, Expr};
@@ -18,11 +22,55 @@ pub struct Component {
     pub model: String,
 }
 
+/// How the data's x becomes the model's x: `x * scale + offset`.
+#[derive(Clone, Copy, Debug, PartialEq, Serialize, Deserialize)]
+#[serde(default)]
+pub struct XTransform {
+    pub scale: f64,
+    pub offset: f64,
+}
+
+impl Default for XTransform {
+    fn default() -> Self {
+        Self::IDENTITY
+    }
+}
+
+impl XTransform {
+    pub const IDENTITY: Self = Self {
+        scale: 1.0,
+        offset: 0.0,
+    };
+    pub const CELSIUS_TO_KELVIN: Self = Self {
+        scale: 1.0,
+        offset: 273.15,
+    };
+
+    pub fn is_identity(&self) -> bool {
+        *self == Self::IDENTITY
+    }
+
+    pub fn apply(&self, x: f64) -> f64 {
+        x * self.scale + self.offset
+    }
+
+    /// `x` converted, borrowed unchanged when there is nothing to do.
+    pub fn apply_all<'a>(&self, x: &'a [f64]) -> std::borrow::Cow<'a, [f64]> {
+        if self.is_identity() {
+            x.into()
+        } else {
+            x.iter().map(|&v| self.apply(v)).collect::<Vec<_>>().into()
+        }
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Serialize, Deserialize)]
 #[serde(default)]
 pub struct ModelSpec {
     pub components: Vec<Component>,
     pub formula: String,
+    /// Conversion of the data's x into the x the models expect.
+    pub x_transform: XTransform,
 }
 
 impl ModelSpec {
@@ -61,6 +109,7 @@ pub struct CompiledComposite {
     /// Slots: one per component, then `x`.
     formula: Compiled,
     params: Vec<ParamDef>,
+    x_transform: XTransform,
 }
 
 impl CompiledComposite {
@@ -108,6 +157,7 @@ impl CompiledComposite {
             names,
             formula,
             params,
+            x_transform: spec.x_transform,
         })
     }
 
@@ -119,8 +169,13 @@ impl CompiledComposite {
         &self.names
     }
 
-    /// Output of each component separately.
+    /// Output of each component separately. `x` is in the data's units.
     pub fn eval_components(&self, x: &[f64], p: &[f64]) -> Result<Vec<Vec<f64>>, String> {
+        let x = self.x_transform.apply_all(x);
+        self.eval_components_raw(&x, p)
+    }
+
+    fn eval_components_raw(&self, x: &[f64], p: &[f64]) -> Result<Vec<Vec<f64>>, String> {
         self.parts
             .iter()
             .zip(&self.names)
@@ -133,8 +188,11 @@ impl CompiledComposite {
             .collect()
     }
 
+    /// The combined model; `x` is in the data's units, and so is `x` in the formula
+    /// after conversion (the models' x).
     pub fn eval(&self, x: &[f64], p: &[f64], out: &mut [f64]) -> Result<(), String> {
-        let comps = self.eval_components(x, p)?;
+        let x = self.x_transform.apply_all(x);
+        let comps = self.eval_components_raw(&x, p)?;
         let mut slots = vec![0.0; comps.len() + 1];
         for (i, o) in out.iter_mut().enumerate() {
             for (s, c) in slots.iter_mut().zip(&comps) {
@@ -148,6 +206,7 @@ impl CompiledComposite {
 
     /// Ask each component for initial values; `None` entries mean "no guess".
     pub fn guess(&self, x: &[f64], y: &[f64]) -> Vec<Option<f64>> {
+        let x = &*self.x_transform.apply_all(x);
         let mut out = vec![None; self.params.len()];
         for (m, range) in &self.parts {
             if let Some(g) = m.guess(x, y)
@@ -180,6 +239,7 @@ mod tests {
                 },
             ],
             formula: formula.into(),
+            ..Default::default()
         }
     }
 
@@ -226,6 +286,26 @@ mod tests {
             model: "missing".into(),
         };
         assert!(CompiledComposite::build(&s, &lookup).is_err());
+    }
+
+    #[test]
+    fn x_transform_converts_before_the_models() {
+        let mut s = spec("g1 + x");
+        s.components.truncate(1);
+        let p = [1.0, 300.0, 10.0];
+        let plain = CompiledComposite::build(&s, &lookup).unwrap();
+        s.x_transform = XTransform::CELSIUS_TO_KELVIN;
+        let conv = CompiledComposite::build(&s, &lookup).unwrap();
+        let (mut a, mut b) = ([0.0; 1], [0.0; 1]);
+        plain.eval(&[300.0], &p, &mut a).unwrap();
+        conv.eval(&[300.0 - 273.15], &p, &mut b).unwrap();
+        assert!((a[0] - b[0]).abs() < 1e-9, "{a:?} vs {b:?}");
+        assert_eq!(
+            serde_json::from_str::<ModelSpec>(r#"{"components":[]}"#)
+                .unwrap()
+                .x_transform,
+            XTransform::IDENTITY
+        );
     }
 
     #[test]

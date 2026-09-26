@@ -3,7 +3,7 @@
 use crate::app::FitApp;
 use crate::app::i18n::t;
 use crate::app::widgets::text_commit;
-use crate::model::composite::CompiledComposite;
+use crate::model::composite::{CompiledComposite, XTransform};
 use crate::model::is_identifier;
 use crate::plugin::Entry;
 use egui::{RichText, Ui};
@@ -163,10 +163,64 @@ impl FitApp {
             let hint = d.spec.effective_formula();
             ui.add(egui::TextEdit::singleline(&mut d.spec.formula).hint_text(hint).desired_width(f32::INFINITY));
         });
+        x_transform_row(ui, sel, &mut d.spec.x_transform);
+        let header = d.data.table.headers.get(d.data.x_col).map(|h| h.to_lowercase());
+        if d.spec.x_transform.is_identity()
+            && header.as_deref().is_some_and(looks_celsius)
+            && d.spec.components.iter().any(|c| c.model.starts_with("Temp"))
+        {
+            ui.colored_label(
+                ui.visuals().warn_fg_color,
+                t(
+                    "⚠ x looks like °C but temperature models expect K — set x → model to °C → K",
+                    "⚠ x は °C のようですが温度モデルは K を想定しています — 「x → モデル」を °C → K に",
+                ),
+            );
+        }
         if !d.spec.components.is_empty()
             && let Err(e) = CompiledComposite::build(&d.spec, &lookup)
         {
             ui.colored_label(ui.visuals().error_fg_color, e);
         }
     }
+}
+
+/// A column header that says its unit is degrees Celsius: `temperature[c]`, `T (°C)`, ...
+fn looks_celsius(h: &str) -> bool {
+    ["[c]", "(c)", "°c", "℃", "celsius", "degc", "deg c"]
+        .iter()
+        .any(|k| h.contains(k))
+}
+
+/// How the data's x is converted before the models see it.
+fn x_transform_row(ui: &mut Ui, sel: usize, x: &mut XTransform) {
+    let presets = [
+        (XTransform::IDENTITY, t("as is", "そのまま")),
+        (XTransform::CELSIUS_TO_KELVIN, t("°C → K (+273.15)", "°C → K (+273.15)")),
+    ];
+    let current = presets
+        .iter()
+        .find(|(p, _)| p == x)
+        .map_or_else(|| t("custom", "カスタム"), |(_, l)| *l);
+    ui.horizontal(|ui| {
+        ui.label(t("x → model", "x → モデル")).on_hover_text(t(
+            "Converts the data's x before it is passed to the models: x · scale + offset.
+Temperature models (Temp…) expect kelvin, so use °C → K for a column in °C.
+Plots, fit ranges and exports stay in the data's units.",
+            "データの x をモデルに渡す前に変換します: x · 倍率 + オフセット。
+温度モデル (Temp…) は K を想定しているので、°C の列なら °C → K を選びます。
+グラフ・フィット範囲・エクスポートはデータの単位のままです。",
+        ));
+        egui::ComboBox::from_id_salt(("x_transform", sel))
+            .selected_text(current)
+            .show_ui(ui, |ui| {
+                for (p, l) in presets {
+                    ui.selectable_value(x, p, l);
+                }
+            });
+        ui.label("x ×");
+        ui.add(egui::DragValue::new(&mut x.scale).speed(0.01));
+        ui.label("+");
+        ui.add(egui::DragValue::new(&mut x.offset).speed(0.1));
+    });
 }

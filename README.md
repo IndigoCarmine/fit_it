@@ -36,6 +36,8 @@ The *Supramolecular* presets are a port of [sp_fitting_models](https://github.co
 
 with K = exp(−ΔH/RT + ΔS/R) and σ = exp(−ΔH_nuc/RT) (a positive ΔH_nuc is a nucleation penalty; the older `model_fitting` package used the opposite sign). `c_tot` is fixed and set to the dataset's `conc_M` automatically.
 
+If the temperature column is already a curve in °C (e.g. `temperature[c]`), set *x → model* under the formula to *°C → K*: the models then get kelvin while the plot and fit range stay in °C. *Copy to all* carries the setting along.
+
 **Temperature scans (cooling/heating curves):**
 1. Open the JASCO `.txt` files (a 2-D export is one dataset: wavelength × temperature).
 2. *Data > Cross-section* (or *Cross-section…* under the dataset): tick the scans, set the wavelength, a baseline range (e.g. 400–∞), *°C to K*, *normalise*, and *invert* if absorbance falls on aggregation. *Create* makes one curve per scan and unchecks the raw scans from the global fit.

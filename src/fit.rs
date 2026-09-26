@@ -1219,6 +1219,7 @@ mod tests {
                 })
                 .collect(),
             formula: String::new(),
+            ..Default::default()
         };
         CompiledComposite::build(&spec, &lookup).unwrap()
     }
@@ -1540,6 +1541,7 @@ mod tests {
                 model: "sine".into(),
             }],
             formula: String::new(),
+            ..Default::default()
         };
         let m = CompiledComposite::build(&spec, &lookup_with_sine).unwrap();
         let x: Vec<f64> = (0..200).map(|i| i as f64 * 0.1).collect();

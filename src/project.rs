@@ -319,6 +319,7 @@ impl Project {
                 .map(|(_, c)| c.clone())
                 .collect(),
             formula: String::new(),
+            x_transform: d.spec.x_transform,
         };
         if !others.components.is_empty()
             && d.spec.formula.trim().is_empty()
@@ -337,7 +338,7 @@ impl Project {
             }
         }
         let g = model
-            .guess(&a.x, &target)
+            .guess(&d.spec.x_transform.apply_all(&a.x), &target)
             .ok_or_else(|| format!("{} cannot guess its parameters", comp.model))?;
         let d = &mut self.datasets[ds];
         for (def, v) in model.info().params.iter().zip(g) {
