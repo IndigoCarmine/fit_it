@@ -55,13 +55,18 @@ fn finite_pairs<'a>(x: &'a [f64], y: &'a [f64]) -> impl Iterator<Item = (f64, f6
         .filter(|(a, b)| a.is_finite() && b.is_finite())
 }
 
+/// Mean of y over the finite points whose x satisfies `keep`.
+fn mean_where(x: &[f64], y: &[f64], keep: impl Fn(f64) -> bool) -> Option<f64> {
+    let (sum, n) = finite_pairs(x, y)
+        .filter(|(a, _)| keep(*a))
+        .fold((0.0, 0usize), |(s, n), (_, b)| (s + b, n + 1));
+    (n > 0).then(|| sum / n as f64)
+}
+
 /// Value of the spectrum `(x, y)` at `at`: nearest point, or the mean within ±window.
 pub fn value_at(x: &[f64], y: &[f64], at: f64, window: f64) -> Option<f64> {
     if window > 0.0 {
-        let (sum, n) = finite_pairs(x, y)
-            .filter(|(a, _)| (a - at).abs() <= window)
-            .fold((0.0, 0usize), |(s, n), (_, b)| (s + b, n + 1));
-        return (n > 0).then(|| sum / n as f64);
+        return mean_where(x, y, |a| (a - at).abs() <= window);
     }
     finite_pairs(x, y)
         .min_by(|p, q| (p.0 - at).abs().total_cmp(&(q.0 - at).abs()))
@@ -71,10 +76,7 @@ pub fn value_at(x: &[f64], y: &[f64], at: f64, window: f64) -> Option<f64> {
 /// Mean of y over x in `[lo, hi]` (either order).
 pub fn range_mean(x: &[f64], y: &[f64], (lo, hi): (f64, f64)) -> Option<f64> {
     let (lo, hi) = (lo.min(hi), hi.max(lo));
-    let (sum, n) = finite_pairs(x, y)
-        .filter(|(a, _)| *a >= lo && *a <= hi)
-        .fold((0.0, 0usize), |(s, n), (_, b)| (s + b, n + 1));
-    (n > 0).then(|| sum / n as f64)
+    mean_where(x, y, |a| a >= lo && a <= hi)
 }
 
 fn read(x: &[f64], y: &[f64], o: &SliceOptions, divisor: f64) -> Result<f64, String> {

@@ -174,10 +174,15 @@ impl Project {
         }
     }
 
+    /// `<tag>.<name>`: how constraints refer to parameter `name` of dataset `src`.
+    fn qualified(&self, src: usize, name: &str) -> String {
+        format!("{}.{}", self.datasets[src].tag, name)
+    }
+
     /// Make parameter `name` of dataset `src` shared: every other dataset with a
     /// parameter of that name gets the constraint `<src tag>.<name>`.
     pub fn share_param(&mut self, src: usize, name: &str) {
-        let expr = format!("{}.{}", self.datasets[src].tag, name);
+        let expr = self.qualified(src, name);
         for (i, d) in self.datasets.iter_mut().enumerate() {
             if i == src {
                 continue;
@@ -197,7 +202,7 @@ impl Project {
 
     /// Undo [`Project::share_param`]: drop constraints that point at `<src tag>.<name>`.
     pub fn unshare_param(&mut self, src: usize, name: &str) {
-        let expr = format!("{}.{}", self.datasets[src].tag, name);
+        let expr = self.qualified(src, name);
         for d in &mut self.datasets {
             for p in &mut d.params {
                 if p.expr.trim() == expr {
@@ -209,12 +214,24 @@ impl Project {
 
     /// How many other datasets currently take `name` from dataset `src`.
     pub fn shared_count(&self, src: usize, name: &str) -> usize {
-        let expr = format!("{}.{}", self.datasets[src].tag, name);
+        let expr = self.qualified(src, name);
         self.datasets
             .iter()
             .flat_map(|d| &d.params)
             .filter(|p| p.expr.trim() == expr)
             .count()
+    }
+
+    /// Set parameter `name` of every dataset that has one to its value in dataset `src`.
+    pub fn copy_value_to_all(&mut self, src: usize, name: &str) {
+        let Some(v) = self.datasets[src].param(name).map(|p| p.value) else {
+            return;
+        };
+        for d in &mut self.datasets {
+            if let Some(p) = d.params.iter_mut().find(|p| p.name == name) {
+                p.value = v;
+            }
+        }
     }
 
     /// Give every other dataset checked for the global fit dataset `src`'s model and parameter settings

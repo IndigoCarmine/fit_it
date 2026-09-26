@@ -55,7 +55,12 @@ impl SourceKind {
     }
 
     fn of(path: &Path) -> Option<SourceKind> {
-        match path.extension()?.to_str()? {
+        Self::from_extension(path.extension()?.to_str()?)
+    }
+
+    /// What a file with extension `ext` (without the dot, case-sensitive) loads as.
+    pub fn from_extension(ext: &str) -> Option<SourceKind> {
+        match ext {
             "c" => Some(SourceKind::C),
             "dll" | "so" | "dylib" => Some(SourceKind::Library),
             "py" => Some(SourceKind::Python),

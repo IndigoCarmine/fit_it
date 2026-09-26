@@ -239,8 +239,7 @@ impl FitApp {
                 for d in list {
                     self.selected = self.project.add_dataset(d);
                 }
-                let lookup = self.lookup();
-                self.project.sync_params(&lookup);
+                self.sync_params();
                 self.set_status(t(
                     format!("Created {n} dataset(s) at x = {}", o.at),
                     format!("x = {} で {n} 個のデータセットを作成しました", o.at),

@@ -2,6 +2,7 @@
 
 use super::FitApp;
 use super::i18n::t;
+use super::widgets::num_field;
 use crate::model::expression::{ExprModel, ExprModelSpec, ExprParamSpec};
 use crate::plugin::{self, Template};
 use egui::RichText;
@@ -108,8 +109,7 @@ impl FitApp {
                 ui.label(self.settings.plugin_dir.display().to_string());
                 ui.horizontal(|ui| {
                     if ui.small_button(t("Open", "開く")).clicked() {
-                        let _ = plugin::prepare_plugin_dir(&self.settings.plugin_dir);
-                        plugin::open_in_os(&self.settings.plugin_dir);
+                        self.open_plugin_dir();
                     }
                     if ui.small_button(t("Change…", "変更…")).clicked()
                         && let Some(dir) = rfd::FileDialog::new().set_directory(&self.settings.plugin_dir).pick_folder()
@@ -285,13 +285,13 @@ impl FitApp {
                         for (i, p) in ed.spec.params.iter_mut().enumerate() {
                             ui.label(&p.name);
                             let mut d = p.default.unwrap_or(1.0);
-                            super::widgets::num_field(ui, ("fdef", i), &mut d, 70.0, 1.0, "1");
+                            num_field(ui, ("fdef", i), &mut d, 70.0, 1.0, "1");
                             p.default = Some(d);
                             let mut lo = p.min.unwrap_or(f64::NEG_INFINITY);
-                            super::widgets::num_field(ui, ("fmin", i), &mut lo, 70.0, f64::NEG_INFINITY, "-inf");
+                            num_field(ui, ("fmin", i), &mut lo, 70.0, f64::NEG_INFINITY, "-inf");
                             p.min = lo.is_finite().then_some(lo);
                             let mut hi = p.max.unwrap_or(f64::INFINITY);
-                            super::widgets::num_field(ui, ("fmax", i), &mut hi, 70.0, f64::INFINITY, "inf");
+                            num_field(ui, ("fmax", i), &mut hi, 70.0, f64::INFINITY, "inf");
                             p.max = hi.is_finite().then_some(hi);
                             ui.end_row();
                         }
@@ -312,31 +312,21 @@ impl FitApp {
         });
         if save {
             let ed = self.rt.windows.formula.as_ref().unwrap();
-            let file = self.settings.plugin_dir.join(format!(
+            let file_name = format!(
                 "{}.fexpr",
                 ed.spec
                     .name
                     .to_lowercase()
                     .replace(|c: char| !c.is_alphanumeric() && c != '_', "_")
-            ));
+            );
             let text = format!(
                 "# fit_it formula model (created in the app)\n{}",
                 ed.spec.to_toml()
             );
             let add = ed.add_to_model.then(|| ed.spec.name.clone());
-            match plugin::prepare_plugin_dir(&self.settings.plugin_dir)
-                .and_then(|_| std::fs::write(&file, text).map_err(|e| e.to_string()))
-            {
-                Ok(()) => {
-                    self.rt.pending_add = add;
-                    self.rt.windows.reload_requested = true;
-                    self.set_status(t(
-                        format!("Saved {}", file.display()),
-                        format!("{} を保存しました", file.display()),
-                    ));
-                    open = false;
-                }
-                Err(e) => self.set_error(e),
+            if self.write_plugin_file(&file_name, &text) {
+                self.rt.pending_add = add;
+                open = false;
             }
         }
         if !open {
