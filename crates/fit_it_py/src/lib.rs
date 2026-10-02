@@ -353,8 +353,8 @@ fn eval(py: Python<'_>, m: &PyModel, x: &[f64], p: &[f64], out: &mut [f64]) -> P
         }
     };
     let bytes = res.downcast::<PyBytes>()?.as_bytes();
-    for (o, chunk) in out.iter_mut().zip(bytes.chunks_exact(8)) {
-        *o = f64::from_ne_bytes(chunk.try_into().unwrap());
+    for (o, chunk) in out.iter_mut().zip(bytes.as_chunks::<8>().0) {
+        *o = f64::from_ne_bytes(*chunk);
     }
     Ok(())
 }
