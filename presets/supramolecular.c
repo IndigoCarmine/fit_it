@@ -2,9 +2,12 @@
  * fit_it preset: supramolecular polymerization models.
  *
  * A port of sp_fitting_models (https://github.com/IndigoCarmine/sp_fitting_models,
- * src/lib.rs): the same mass balances, solved for the free monomer by bisection
- * (100 steps), with R = 8.314 J/(mol K). Every model returns the aggregated
- * fraction times `scaler`.
+ * src/lib.rs, v1.3.9): the same mass balances, solved for the free monomer by a
+ * bracketed bisection (at most 100 steps), with R = 8.314 J/(mol K). Every model
+ * returns the aggregated fraction (clamped to [0, 1]) times `scaler`.
+ *
+ * As upstream, a non-positive or non-finite concentration / temperature / c_tot is an
+ * error (eval returns 1), and a negative K or sigma gives NaN.
  *
  * Concentration models take x = total concentration (M).
  * Temperature models take x = temperature (K) and use the van 't Hoff forms
@@ -28,12 +31,18 @@
 
 /* ---- inverse models: total concentration from free monomer concentration ---- */
 
-/* Returns INFINITY past the singularity (K c >= 1) so bisection brackets correctly. */
+/* +INFINITY past the singularity (K c >= 1) so bisection brackets correctly; NaN stays NaN. */
+static double past_singularity(double ck)
+{
+    return isnan(ck) ? NAN : INF;
+}
+
 static double inv_isodesmic(double cm, double k)
 {
-    double d = 1.0 - k * cm;
-    if (d <= 0.0)
-        return INF;
+    double ck = k * cm, d;
+    if (!(ck < 1.0))
+        return past_singularity(ck);
+    d = 1.0 - ck;
     return cm / (d * d);
 }
 
@@ -43,10 +52,10 @@ static double inv_cooperative(double cm, double k, double sigma)
     if (k == 0.0)
         return cm;
     ck = k * cm;
-    if (ck >= 1.0)
-        return INF;
+    if (!(ck < 1.0))
+        return past_singularity(ck);
     d = 1.0 - ck;
-    return cm + sigma / k * (ck * ck * (2.0 - ck)) / (d * d);
+    return cm + sigma * ck * cm * (2.0 - ck) / (d * d);
 }
 
 /* Nucleus size N >= 2: species of size s carry sigma^(min(s, N) - 1). */
@@ -57,13 +66,13 @@ static double inv_cooperative_n(double cm, double k, double sigma, int n)
     if (k == 0.0)
         return cm;
     ck = k * cm;
-    if (ck >= 1.0)
-        return INF;
+    if (!(ck < 1.0))
+        return past_singularity(ck);
     d = 1.0 - ck;
-    elong = pow(sigma, n - 1) / k * (ck * ck * (2.0 - ck)) / (d * d);
+    elong = pow(sigma, n - 1) * ck * cm * (2.0 - ck) / (d * d);
     /* 1 - sigma^m evaluated without cancellation near sigma = 1. */
     ln_sigma = log1p(sigma - 1.0);
-    ck_pow = ck * ck;
+    ck_pow = ck; /* (K c)^(s-1); times c below this gives K^(s-1) c^s */
     sigma_pow = sigma;
     for (s = 2; s < n; ++s) {
         double one_minus = -expm1((double)(n - s) * ln_sigma);
@@ -71,16 +80,14 @@ static double inv_cooperative_n(double cm, double k, double sigma, int n)
         ck_pow *= ck;
         sigma_pow *= sigma;
     }
-    return cm + elong + corr / k;
+    return cm + elong + corr * cm;
 }
 
-enum kind { ISO, COOP, COOP_N, COOP_ISO };
+enum kind { COOP, COOP_N, COOP_ISO };
 
 static double inverse(enum kind kind, double cm, const double *k)
 {
     switch (kind) {
-    case ISO:
-        return inv_isodesmic(cm, k[0]);
     case COOP:
         return inv_cooperative(cm, k[0], k[1]);
     case COOP_N:
@@ -91,27 +98,76 @@ static double inverse(enum kind kind, double cm, const double *k)
     return NAN;
 }
 
-/* Aggregated fraction 1 - c_monomer / c_tot, by bisection on c_monomer in (0, 1/K). */
-static double aggregate(enum kind kind, double conc, const double *k)
+/*
+ * Aggregated fraction 1 - c_monomer / conc, by bisection on c_monomer.
+ * The root lies in [0, min(conc, x_max)] (x_max = singularity of the inverse model,
+ * e.g. 1/K), so a tiny K cannot leave the bisection unconverged. Non-finite inverse
+ * values count as "above the root"; iteration stops once the interval can no longer
+ * shrink; the result is clamped to [0, 1].
+ */
+static double aggregate(enum kind kind, double conc, double x_max, const double *k)
 {
-    double lo = 0.0, hi, kmax;
+    double lo = 0.0, hi;
     int i;
-    if (!(conc > 0.0))
-        return 0.0;
-    kmax = kind == COOP_ISO ? fmax(k[0], k[1]) : k[0];
-    if (!(kmax > 0.0))
-        return 0.0; /* no association at all */
-    hi = 1.0 / kmax;
+    if (!(conc > 0.0) || isnan(x_max))
+        return NAN;
+    hi = fmax(fmin(conc, x_max), 0.0);
+    if (hi == 0.0)
+        return 1.0; /* K -> infinity: no free monomer remains */
     for (i = 0; i < N_ITER; ++i) {
-        double mid = 0.5 * (lo + hi);
-        if (inverse(kind, mid, k) - conc <= 0.0)
+        double mid = 0.5 * (lo + hi), f;
+        if (mid <= lo || mid >= hi)
+            break;
+        f = inverse(kind, mid, k);
+        if (isfinite(f) && f <= conc)
             lo = mid;
         else
             hi = mid;
     }
-    return 1.0 - 0.5 * (lo + hi) / conc;
+    return fmin(fmax(1.0 - 0.5 * (lo + hi) / conc, 0.0), 1.0);
 }
 
+/* Closed-form isodesmic aggregation for conc > 0, cancellation-free for small K c. */
+static double isodesmic_direct(double conc, double k)
+{
+    double b, s, den;
+    if (!(k >= 0.0))
+        return NAN;
+    b = k * conc;
+    if (b == 0.0)
+        return 0.0;
+    s = sqrt(4.0 * b + 1.0);
+    den = 2.0 * b + 1.0 + s;
+    if (!isfinite(den))
+        return 1.0;
+    return fmin(fmax((2.0 * b + 4.0 * b / (s + 1.0)) / den, 0.0), 1.0);
+}
+
+static double coop(double conc, double k, double sigma)
+{
+    double kk[2] = {k, sigma};
+    if (!(k >= 0.0) || !(sigma >= 0.0))
+        return NAN;
+    return aggregate(COOP, conc, 1.0 / k, kk);
+}
+
+static double coop_n(double conc, double k, double sigma, int n)
+{
+    double kk[3] = {k, sigma, (double)n};
+    if (!(k >= 0.0) || !(sigma >= 0.0))
+        return NAN;
+    return aggregate(COOP_N, conc, 1.0 / k, kk);
+}
+
+static double coop_iso_agg(double conc, double k_iso, double k_coop, double sigma)
+{
+    double kk[3] = {k_iso, k_coop, sigma};
+    if (!(k_iso >= 0.0) || !(k_coop >= 0.0) || !(sigma >= 0.0))
+        return NAN;
+    return aggregate(COOP_ISO, conc, fmin(1.0 / k_iso, 1.0 / k_coop), kk);
+}
+
+/* Overflow to inf / underflow to 0 is fine: the solvers handle both limits. */
 static double van_t_hoff(double t, double dh, double ds)
 {
     return exp(-dh / (R_GAS * t) + ds / R_GAS);
@@ -128,39 +184,52 @@ static int nucleus(double v)
     return n < 2 ? 2 : n;
 }
 
+/* Concentrations and temperatures must be positive and finite. */
+static int positive(double v)
+{
+    return isfinite(v) && v > 0.0;
+}
+
 /* ---- concentration models (x = total concentration, M) ---- */
 
 static int32_t isodesmic(const double *x, size_t n, const double *p, double *out)
 {
     for (size_t i = 0; i < n; ++i) {
-        /* Closed form: with b = K c, K c_mono = 2b / (2b + 1 + sqrt(4b + 1)). */
-        double b = p[0] * x[i];
-        out[i] = b > 0.0 ? p[1] * (1.0 - 2.0 / (2.0 * b + 1.0 + sqrt(4.0 * b + 1.0))) : 0.0;
+        if (!positive(x[i]))
+            return 1;
+        out[i] = p[1] * isodesmic_direct(x[i], p[0]);
     }
     return 0;
 }
 
 static int32_t cooperative(const double *x, size_t n, const double *p, double *out)
 {
-    double k[2] = {p[0], p[1]};
-    for (size_t i = 0; i < n; ++i)
-        out[i] = p[2] * aggregate(COOP, x[i], k);
+    for (size_t i = 0; i < n; ++i) {
+        if (!positive(x[i]))
+            return 1;
+        out[i] = p[2] * coop(x[i], p[0], p[1]);
+    }
     return 0;
 }
 
 static int32_t cooperative_n(const double *x, size_t n, const double *p, double *out)
 {
-    double k[3] = {p[0], p[1], (double)nucleus(p[2])};
-    for (size_t i = 0; i < n; ++i)
-        out[i] = p[3] * aggregate(COOP_N, x[i], k);
+    int nuc = nucleus(p[2]);
+    for (size_t i = 0; i < n; ++i) {
+        if (!positive(x[i]))
+            return 1;
+        out[i] = p[3] * coop_n(x[i], p[0], p[1], nuc);
+    }
     return 0;
 }
 
 static int32_t coop_iso(const double *x, size_t n, const double *p, double *out)
 {
-    double k[3] = {p[0], p[1], p[2]};
-    for (size_t i = 0; i < n; ++i)
-        out[i] = p[3] * aggregate(COOP_ISO, x[i], k);
+    for (size_t i = 0; i < n; ++i) {
+        if (!positive(x[i]))
+            return 1;
+        out[i] = p[3] * coop_iso_agg(x[i], p[0], p[1], p[2]);
+    }
     return 0;
 }
 
@@ -169,9 +238,12 @@ static int32_t coop_iso(const double *x, size_t n, const double *p, double *out)
 static int32_t temp_isodesmic(const double *x, size_t n, const double *p, double *out)
 {
     /* deltaH, deltaS, c_tot, scaler */
+    if (!positive(p[2]))
+        return 1;
     for (size_t i = 0; i < n; ++i) {
-        double b = van_t_hoff(x[i], p[0], p[1]) * p[2];
-        out[i] = b > 0.0 ? p[3] * (1.0 - 2.0 / (2.0 * b + 1.0 + sqrt(4.0 * b + 1.0))) : 0.0;
+        if (!positive(x[i]))
+            return 1;
+        out[i] = p[3] * isodesmic_direct(p[2], van_t_hoff(x[i], p[0], p[1]));
     }
     return 0;
 }
@@ -179,9 +251,12 @@ static int32_t temp_isodesmic(const double *x, size_t n, const double *p, double
 static int32_t temp_cooperative(const double *x, size_t n, const double *p, double *out)
 {
     /* deltaH, deltaS, deltaHnuc, c_tot, scaler */
+    if (!positive(p[3]))
+        return 1;
     for (size_t i = 0; i < n; ++i) {
-        double k[2] = {van_t_hoff(x[i], p[0], p[1]), penalty(x[i], p[2])};
-        out[i] = p[4] * aggregate(COOP, p[3], k);
+        if (!positive(x[i]))
+            return 1;
+        out[i] = p[4] * coop(p[3], van_t_hoff(x[i], p[0], p[1]), penalty(x[i], p[2]));
     }
     return 0;
 }
@@ -189,9 +264,13 @@ static int32_t temp_cooperative(const double *x, size_t n, const double *p, doub
 static int32_t temp_cooperative_n(const double *x, size_t n, const double *p, double *out)
 {
     /* deltaH, deltaS, deltaHnuc, nuc_size, c_tot, scaler */
+    int nuc = nucleus(p[3]);
+    if (!positive(p[4]))
+        return 1;
     for (size_t i = 0; i < n; ++i) {
-        double k[3] = {van_t_hoff(x[i], p[0], p[1]), penalty(x[i], p[2]), (double)nucleus(p[3])};
-        out[i] = p[5] * aggregate(COOP_N, p[4], k);
+        if (!positive(x[i]))
+            return 1;
+        out[i] = p[5] * coop_n(p[4], van_t_hoff(x[i], p[0], p[1]), penalty(x[i], p[2]), nuc);
     }
     return 0;
 }
@@ -199,9 +278,13 @@ static int32_t temp_cooperative_n(const double *x, size_t n, const double *p, do
 static int32_t temp_coop_iso(const double *x, size_t n, const double *p, double *out)
 {
     /* deltaH_iso, deltaS_iso, deltaH_coop, deltaS_coop, deltaHnuc_coop, c_tot, scaler */
+    if (!positive(p[5]))
+        return 1;
     for (size_t i = 0; i < n; ++i) {
-        double k[3] = {van_t_hoff(x[i], p[0], p[1]), van_t_hoff(x[i], p[2], p[3]), penalty(x[i], p[4])};
-        out[i] = p[6] * aggregate(COOP_ISO, p[5], k);
+        if (!positive(x[i]))
+            return 1;
+        out[i] = p[6] * coop_iso_agg(p[5], van_t_hoff(x[i], p[0], p[1]), van_t_hoff(x[i], p[2], p[3]),
+                                     penalty(x[i], p[4]));
     }
     return 0;
 }

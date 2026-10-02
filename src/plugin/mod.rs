@@ -387,7 +387,7 @@ mod tests {
         assert!((guess[2] - 0.6).abs() < 0.1);
     }
 
-    /// Reference values computed with sp_fitting_models 1.3.8 (the library the
+    /// Reference values computed with sp_fitting_models 1.3.9 (the library the
     /// supramolecular preset is ported from).
     #[test]
     fn supramolecular_preset_matches_sp_fitting_models() {
@@ -395,7 +395,8 @@ mod tests {
         let t = [300.0, 330.0, 350.0];
         // (model, x, parameters, expected)
         type Case<'a> = (&'a str, &'a [f64], &'a [f64], [f64; 3]);
-        let cases: [Case; 4] = [
+        let conc = [1e-6, 1e-5, 1e-4];
+        let cases: [Case; 8] = [
             (
                 "TempCooperative",
                 &t,
@@ -424,6 +425,30 @@ mod tests {
                     0.903270677349801,
                 ],
             ),
+            (
+                "TempCooperativeN",
+                &t,
+                &[-100000.0, -200.0, 10000.0, 4.0, 2e-5, 1.0],
+                [0.9945797238901102, 0.792947743805153, 0.03691620570500309],
+            ),
+            (
+                "CooperativeN",
+                &conc,
+                &[1e5, 0.01, 3.0, 1.0],
+                [0.001995461222902506, 0.0523147842294962, 0.9003330783466562],
+            ),
+            (
+                "CoopIso",
+                &conc,
+                &[1e4, 1e5, 0.01, 1.0],
+                [0.021664365948949826, 0.2456227659903475, 0.9033100962079069],
+            ),
+            (
+                "Isodesmic",
+                &conc,
+                &[1e5, 1.0],
+                [0.1607978309961604, 0.6180339887498949, 0.9270156211871643],
+            ),
         ];
         for (name, x, p, want) in cases {
             let m = reg.get(name).unwrap_or_else(|| panic!("{name} missing"));
@@ -433,6 +458,34 @@ mod tests {
                 assert!((o - w).abs() < 1e-9, "{name}: {o} vs {w}");
             }
         }
+        // Extreme parameters stay finite and in [0, 1]; a tiny K means no aggregation.
+        let coop = reg.get("Cooperative").unwrap();
+        let mut out = [0.0; 3];
+        coop.eval(&conc, &[1e-12, 0.01, 1.0], &mut out).unwrap();
+        assert!(out.iter().all(|&o| (0.0..1e-12).contains(&o)), "{out:?}");
+        coop.eval(&conc, &[1e300, 1.0, 1.0], &mut out).unwrap();
+        assert!(out.iter().all(|&o| (o - 1.0).abs() < 1e-9), "{out:?}");
+        // As upstream: a negative K is NaN, a non-positive concentration or temperature an error.
+        coop.eval(&conc, &[-1.0, 0.01, 1.0], &mut out).unwrap();
+        assert!(out.iter().all(|o| o.is_nan()), "{out:?}");
+        assert!(
+            coop.eval(&[0.0, 1e-5, 1e-4], &[1e5, 0.01, 1.0], &mut out)
+                .is_err()
+        );
+        let tc = reg.get("TempCooperative").unwrap();
+        assert!(
+            tc.eval(
+                &[0.0, 300.0, 330.0],
+                &[-1e5, -200.0, 1e4, 2e-5, 1.0],
+                &mut out
+            )
+            .is_err()
+        );
+        assert!(
+            tc.eval(&t, &[-1e5, -200.0, 1e4, 0.0, 1.0], &mut out)
+                .is_err()
+        );
+
         // c_tot is a known input: fixed, and linked to the file's concentration.
         let model = reg.get("TempCooperative").unwrap();
         let c_tot = &model.info().params[3];
