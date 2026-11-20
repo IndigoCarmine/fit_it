@@ -8,7 +8,7 @@
 use egui_kittest::Harness;
 use egui_kittest::kittest::Queryable;
 use fit_it::FitApp;
-use fit_it::plugin::{Folder, LoadOptions, Registry, find_presets_dir};
+use fit_it::plugin::{Folder, LoadOptions, Registry};
 use std::path::{Path, PathBuf};
 
 /// Parameters the fake data are generated from (what the fit should recover).
@@ -49,7 +49,7 @@ fn write_fake_data(dir: &Path) -> Vec<PathBuf> {
     let registry = Registry::load(
         &[Folder {
             label: "Presets".into(),
-            path: find_presets_dir().expect("presets next to the test binary"),
+            path: presets_dir(),
         }],
         &LoadOptions {
             python: "python".into(),
@@ -407,4 +407,9 @@ fn manual_screenshots() {
             to_right_edge: false,
         },
     );
+}
+
+/// Presets that build.rs copied into target/<profile>/presets.
+fn presets_dir() -> std::path::PathBuf {
+    std::path::Path::new(env!("FIT_IT_PROFILE_DIR")).join("presets")
 }

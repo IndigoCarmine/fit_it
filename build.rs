@@ -33,9 +33,22 @@ fn build_presets(target: &str) {
     println!("cargo:rerun-if-changed={}", header.display());
     println!("cargo:rerun-if-changed=src/plugin/compile.rs");
 
-    // OUT_DIR = target/[<triple>/]<profile>/build/<pkg>-<hash>/out
+    // OUT_DIR is target/[<triple>/]<profile>/build/<pkg>-<hash>/out (Cargo <= 1.99)
+    // or target/[<triple>/]<profile>/build/<pkg>/<hash>/out (Cargo 1.100+); the
+    // profile dir is the parent of `build` in both layouts.
     let out_dir = PathBuf::from(std::env::var("OUT_DIR").unwrap());
-    let profile_dir = out_dir.ancestors().nth(3).unwrap().to_path_buf();
+    let profile_dir = out_dir
+        .ancestors()
+        .find(|p| p.file_name().is_some_and(|n| n == "build"))
+        .and_then(Path::parent)
+        .expect("OUT_DIR lies under <profile>/build")
+        .to_path_buf();
+    // Test binaries no longer sit next to (or one below) the profile dir, so tests
+    // locate presets and the Python bridge through this instead of current_exe().
+    println!(
+        "cargo:rustc-env=FIT_IT_PROFILE_DIR={}",
+        profile_dir.display()
+    );
     let dest = profile_dir.join("presets");
     std::fs::create_dir_all(&dest).unwrap();
     copy_if_changed(&header, &dest.join("fit_it_plugin.h"));

@@ -12,7 +12,7 @@
 use fit_it::data::Dataset;
 use fit_it::fit::fit;
 use fit_it::model::composite::Component;
-use fit_it::plugin::{Folder, LoadOptions, Registry, find_presets_dir};
+use fit_it::plugin::{Folder, LoadOptions, Registry};
 use fit_it::project::{DerivedSpec, Project};
 use fit_it::transform::{SliceOptions, slice_columns};
 
@@ -31,7 +31,7 @@ fn global_temp_cooperative_fit_on_jasco_scans() {
     let registry = Registry::load(
         &[Folder {
             label: "Presets".into(),
-            path: find_presets_dir().expect("presets next to the test binary"),
+            path: presets_dir(),
         }],
         &LoadOptions {
             python: "python".into(),
@@ -162,7 +162,7 @@ fn cooperative_fit_on_titration_series() {
     let registry = Registry::load(
         &[Folder {
             label: "Presets".into(),
-            path: find_presets_dir().unwrap(),
+            path: presets_dir(),
         }],
         &LoadOptions {
             python: "python".into(),
@@ -229,4 +229,9 @@ y = {:?}",
     );
     println!("{}", out.report());
     assert!(out.success, "{}", out.message);
+}
+
+/// Presets that build.rs copied into target/<profile>/presets.
+fn presets_dir() -> std::path::PathBuf {
+    std::path::Path::new(env!("FIT_IT_PROFILE_DIR")).join("presets")
 }

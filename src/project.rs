@@ -406,19 +406,18 @@ mod tests {
     #[test]
     fn guess_then_global_fit_with_shared_sigma() {
         let mut p = project();
-        for ds in 0..2 {
+        for d in &mut p.datasets[..2] {
             // Background first is not needed: the Gaussian's own guess handles the offset poorly,
             // so fix the line to the known baseline.
-            let d = &mut p.datasets[ds];
             d.params[3].value = 0.0;
             d.params[4].value = 0.5;
         }
         p.share_param(0, "g1_sigma");
         assert_eq!(p.shared_count(0, "g1_sigma"), 1);
         assert_eq!(p.datasets[1].param("g1_sigma").unwrap().expr, "D1.g1_sigma");
-        for ds in 0..2 {
-            p.datasets[ds].params[0].value = 5.0;
-            p.datasets[ds].params[1].value = if ds == 0 { -0.8 } else { 1.2 };
+        for (ds, d) in p.datasets[..2].iter_mut().enumerate() {
+            d.params[0].value = 5.0;
+            d.params[1].value = if ds == 0 { -0.8 } else { 1.2 };
         }
         let problem = p.problem(&lookup, &|i| p.datasets[i].include).unwrap();
         let out = fit(&problem, &p.options, None, None).unwrap();

@@ -322,12 +322,18 @@ pub fn open_in_os(path: &Path) {
     let _ = std::process::Command::new(cmd).arg(path).spawn();
 }
 
+/// Presets that build.rs copied into target/<profile>/presets.
+#[cfg(test)]
+pub(crate) fn test_presets_dir() -> PathBuf {
+    Path::new(env!("FIT_IT_PROFILE_DIR")).join("presets")
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
 
     fn presets() -> Registry {
-        let dir = find_presets_dir().expect("build.rs puts presets next to the test binary");
+        let dir = test_presets_dir();
         Registry::load(
             &[Folder {
                 label: "Presets".into(),

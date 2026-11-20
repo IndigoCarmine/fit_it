@@ -145,13 +145,16 @@ fn bridge_path() -> Option<PathBuf> {
     let exe = std::env::current_exe().ok()?;
     let dir = exe.parent()?;
     // Next to the exe; one up for test binaries in target/<profile>/deps; lib/ for Linux packages.
-    [
+    #[allow(unused_mut)]
+    let mut candidates = vec![
         dir.join(name),
         dir.join("..").join(name),
         dir.join("../lib/fit_it").join(name),
-    ]
-    .into_iter()
-    .find(|p| p.exists())
+    ];
+    // Cargo 1.100+ puts test binaries under target/<profile>/build/, away from the bridge.
+    #[cfg(test)]
+    candidates.push(Path::new(env!("FIT_IT_PROFILE_DIR")).join(name));
+    candidates.into_iter().find(|p| p.exists())
 }
 
 /// # Safety
@@ -374,9 +377,7 @@ mod tests {
             eprintln!("skipped: needs python + numpy and the fit_it_py bridge");
             return;
         }
-        let file = crate::plugin::find_presets_dir()
-            .unwrap()
-            .join("lorentz.py");
+        let file = crate::plugin::test_presets_dir().join("lorentz.py");
         let models = load(&file, "python").unwrap();
         let m = &models[0];
         let names: Vec<_> = m.info().params.iter().map(|p| p.name.as_str()).collect();
