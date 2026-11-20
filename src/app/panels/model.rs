@@ -164,10 +164,18 @@ impl FitApp {
             ui.add(egui::TextEdit::singleline(&mut d.spec.formula).hint_text(hint).desired_width(f32::INFINITY));
         });
         x_transform_row(ui, sel, &mut d.spec.x_transform);
-        let header = d.data.table.headers.get(d.data.x_col).map(|h| h.to_lowercase());
+        let header = d
+            .data
+            .table
+            .headers
+            .get(d.data.x_col)
+            .map(|h| h.to_lowercase());
         if d.spec.x_transform.is_identity()
             && header.as_deref().is_some_and(looks_celsius)
-            && d.spec.components.iter().any(|c| c.model.starts_with("Temp"))
+            && d.spec
+                .components
+                .iter()
+                .any(|c| c.model.starts_with("Temp"))
         {
             ui.colored_label(
                 ui.visuals().warn_fg_color,
@@ -196,7 +204,10 @@ fn looks_celsius(h: &str) -> bool {
 fn x_transform_row(ui: &mut Ui, sel: usize, x: &mut XTransform) {
     let presets = [
         (XTransform::IDENTITY, t("as is", "そのまま")),
-        (XTransform::CELSIUS_TO_KELVIN, t("°C → K (+273.15)", "°C → K (+273.15)")),
+        (
+            XTransform::CELSIUS_TO_KELVIN,
+            t("°C → K (+273.15)", "°C → K (+273.15)"),
+        ),
     ];
     let current = presets
         .iter()
